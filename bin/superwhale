@@ -1,0 +1,289 @@
+#!/usr/bin/ruby
+
+# Dependencies
+require 'yaml'
+require 'filewatcher'
+require 'logger'
+
+# Folders constants
+PATHS = {
+    superwhale: {
+        custom: '/etc/superwhale.d',
+        defaults: '/usr/lib/superwhale',
+    },
+    haproxy: '/etc/haproxy',
+    hosts: '/etc/hosts'
+}
+
+# SuperWhale constants
+SUPERWHALE = {
+    version: '1.0.0',
+    debug: ARGV.include?('--debug'),
+    info: ARGV.include?('--info'),
+    services: "#{PATHS[:superwhale][:custom]}/*.yml",
+    defaults: {
+        header: "#{PATHS[:superwhale][:defaults]}/header.cfg"
+    },
+    custom: {
+        header: "#{PATHS[:superwhale][:custom]}/header.cfg",
+        https_cert: "#{PATHS[:superwhale][:custom]}/https.pem"
+    },
+    failed_services: []
+}
+
+# HAProxies constants
+HAPROXY = {
+    binary: '/usr/sbin/haproxy',
+    debug_flag: '-d',
+    dispatcher: {
+        config: "#{PATHS[:haproxy]}/haproxy_dispatcher.cfg"
+    },
+    master: {
+        config: "#{PATHS[:haproxy]}/haproxy_master.cfg",
+        port: 10080
+    },
+    slave: {
+        config: "#{PATHS[:haproxy]}/haproxy_slave.cfg",
+        port: 11080
+    }
+}
+
+# Logging helper
+LOGGER = Logger.new(STDOUT)
+LOGGER.level = if SUPERWHALE[:debug]
+                 Logger::DEBUG
+               elsif SUPERWHALE[:info]
+                 Logger::INFO
+               else
+                 Logger::WARN
+               end
+
+# Checks if a host exists in /etc/hosts file
+def hosts_exists?(hostname)
+  hosts = File.read PATHS[:hosts]
+  hosts.include? "\t#{hostname}\n"
+end
+
+def compile_haproxy_config(frontend_directives, backend_blocks, instance_port)
+  # Loading header of haproxy configuration file
+  haproxy_cfg = if File.exist? SUPERWHALE[:custom][:header]
+                  LOGGER.info 'Loaded custom haproxy config header'
+                  File.read SUPERWHALE[:custom][:header]
+                else
+                  LOGGER.info 'Loaded default haproxy config header'
+                  File.read SUPERWHALE[:defaults][:header]
+                end
+
+  # Compiling frontend block
+  haproxy_cfg << "\n\nfrontend public\n"
+  frontend_directives.each do |directive|
+    haproxy_cfg << "  #{directive}\n".gsub('%INSTANCE_PORT%', instance_port.to_s)
+  end
+
+  # Compiling backend blocks
+  backend_blocks.each do |name, directives|
+    haproxy_cfg << "\nbackend #{name}_backend\n"
+    directives.each do |directive|
+      haproxy_cfg << "  #{directive}\n"
+    end
+  end
+
+  haproxy_cfg
+end
+
+# Create HAProxies configuration from superwhale services
+def create_haproxy_config(generate_dispatcher)
+
+  # Generating dispatcher configuration
+  if generate_dispatcher
+    # Dispatcher defaults
+    dispatcher_config = "defaults\n"
+    dispatcher_config << "  maxconn 4096\n"
+    dispatcher_config << "  log global\n"
+    dispatcher_config << "  mode http\n"
+    dispatcher_config << "  retries 3\n"
+    dispatcher_config << "  timeout connect 5s\n"
+    dispatcher_config << "  timeout client 15m\n"
+    dispatcher_config << "  timeout server 15m\n\n"
+
+    # Dispatcher frontend
+    dispatcher_config << "frontend public\n"
+    dispatcher_config << "  bind *:80\n"
+
+    # Frontend HTTPS management
+    if File.exist? SUPERWHALE[:custom][:https_cert]
+      LOGGER.info 'Certificate found, activating SSL'
+      dispatcher_config << "  bind *:443 ssl crt #{SUPERWHALE[:custom][:https_cert]}\n"
+      if ARGV.include? '--force-ssl'
+        dispatcher_config << "  redirect scheme https if !{ ssl_fc }\n"
+      end
+    else
+      LOGGER.warn 'No certificate found, disabling SSL capabilities'
+    end
+    dispatcher_config << "  default_backend dispatched\n\n"
+
+    # Dispatcher backend
+    dispatcher_config << "backend dispatched\n"
+    dispatcher_config << "  server master 127.0.0.1:#{HAPROXY[:master][:port]} check\n"
+    dispatcher_config << "  server slave 127.0.0.1:#{HAPROXY[:slave][:port]} check backup\n"
+
+    LOGGER.debug "Dispatcher configuration:\n\n#{dispatcher_config}"
+
+    File.write HAPROXY[:dispatcher][:config], dispatcher_config
+  end
+
+
+  LOGGER.info 'Parsing configurations'
+
+  # Frontend block
+  frontend_directives = []
+  frontend_directives << 'bind *:%INSTANCE_PORT%'
+
+  # Backend blocks
+  backend_blocks = {}
+
+  # Iterating on services
+  default_backend_found = false
+  Dir[SUPERWHALE[:services]].each do |file|
+    begin
+      services = YAML.load_file file
+      services.each do |name, options|
+        LOGGER.debug "Parsing service #{name} : #{options.to_s}"
+
+        # Checking if a service is using the same name
+        if backend_blocks.has_key?(name)
+          LOGGER.fatal 'Multiple services are using the same name, can\'t continue !'
+          exit 11
+        end
+
+        # Parsing and iterating on hosts of current service
+        hosts = []
+        LOGGER.info "Configuring and adding #{name} service : "
+        options['backends'].each do |backend|
+          if hosts_exists? backend['host']
+            hosts << backend
+            LOGGER.info "[Service/#{name}] Adding #{name}/#{backend['host']}"
+          else
+            LOGGER.warn "[Service/#{name}] Skipping #{name}/#{backend['host']}, can't found it in /etc/hosts"
+          end
+        end
+        if hosts.count == 0
+          LOGGER.warn "No host available for service #{name} : skipping it"
+          SUPERWHALE[:failed_services] << name unless SUPERWHALE[:failed_services].include? name
+          next
+        else
+          if SUPERWHALE[:failed_services].include? name
+            LOGGER.warn "Service #{name} is now available again"
+            SUPERWHALE[:failed_services].delete name
+          else
+            LOGGER.info "Service #{name} loaded"
+          end
+        end
+
+        # Configuring service in frontend block
+        frontend_directives << "acl host_#{name} hdr(host) -i #{options['domain_name']}"
+        frontend_directives << "use_backend #{name}_backend if host_#{name}"
+        if options['is_default']
+          if default_backend_found
+            LOGGER.fatal 'Multiple default backend in config file, can\'t continue'
+            exit 10
+          end
+          frontend_directives << "default_backend #{name}_backend"
+          default_backend_found = true
+        end
+
+        # Defining service backend block
+        backend_blocks[name] = []
+
+        # Adding load-balancing algorithm if needed
+        if hosts.count > 1
+          backend_blocks[name] << (options['balance'] || 'roundrobin')
+        end
+
+        # Iterating on backend hosts
+        current_index = 0
+        hosts.each do |host|
+          backend_blocks[name] << "server #{name}#{current_index+=1} #{host['host']}:#{host['port']}"
+        end
+
+        # Adding custom options
+        options['options'].each do |custom_option|
+          backend_blocks[name] << custom_option
+        end if options.has_key? 'options'
+      end
+    rescue
+      # Something wrong happened while parsing service file, ignoring it.
+      LOGGER.warn "Incorrect service file : #{File.basename(file)}"
+    end
+  end
+
+  # Generating and writing final configuration files, for master...
+  master_config = compile_haproxy_config frontend_directives, backend_blocks, HAPROXY[:master][:port]
+  File.write HAPROXY[:master][:config], master_config
+  # ...and for slave
+  slave_config = compile_haproxy_config frontend_directives, backend_blocks, HAPROXY[:slave][:port]
+  File.write HAPROXY[:slave][:config], slave_config
+
+  LOGGER.debug "Master HAProxy configuration file generated :\n\n#{master_config}\n"
+  LOGGER.debug "Slave HAProxy configuration file generated :\n\n#{slave_config}\n"
+
+  LOGGER.info 'HAProxy configuration file created'
+end
+
+# Fork HAProxy and return its PID
+def start_haproxy(config_file)
+  LOGGER.info 'Starting up HAProxy...'
+  pid = fork do
+    exec "#{HAPROXY[:binary]} -f #{config_file} #{HAPROXY[:debug_flag] if SUPERWHALE[:debug]}"
+  end
+  LOGGER.info "Forked haproxy (#{config_file}) with PID : #{pid}"
+  pid
+end
+
+# Entry point
+def main
+  LOGGER.warn "Starting up SuperWhale, version #{PATHS[:superwhale][:version]} !"
+
+  # Creating haproxy configuration file including dispatcher config
+  create_haproxy_config true
+
+  # Starting master HAProxy process...
+  haproxy_master_pid = start_haproxy HAPROXY[:master][:config]
+  haproxy_slave_pid = start_haproxy HAPROXY[:slave][:config]
+
+  sleep 2
+
+  # Starting dispatcher HAProxy process...
+  start_haproxy HAPROXY[:dispatcher][:config]
+
+  # Watching for file changes, (blocking)
+  FileWatcher.new([PATHS[:hosts], "#{PATHS[:superwhale][:custom]}/*"]).watch do
+    LOGGER.warn 'File modification detected !'
+
+    # Recreating haproxy configuration file without dispatcher config
+    create_haproxy_config false
+
+    # Killing slave
+    LOGGER.info 'Killing slave'
+    Process.kill 'USR1', haproxy_slave_pid
+    Process.wait haproxy_slave_pid
+    LOGGER.info 'Killing slave done'
+
+    # Restarting slave with new configuration
+    LOGGER.info 'Restarting slave'
+    haproxy_slave_pid = start_haproxy HAPROXY[:slave][:config]
+
+    # Killing master
+    LOGGER.info 'Killing master'
+    Process.kill 'USR1', haproxy_master_pid
+    Process.wait haproxy_master_pid
+    LOGGER.info 'Killing master done'
+
+    # Restarting master with new configuration
+    LOGGER.info 'Restarting master'
+    haproxy_master_pid = start_haproxy HAPROXY[:master][:config]
+  end
+end
+
+# Calling entry point
+main
