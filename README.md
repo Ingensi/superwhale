@@ -114,7 +114,7 @@ You can use HTTPS by simply adding certificate file : `/etc/superwhale.d/https.p
 $ cat server.crt server.key > /etc/superwhale.d/https.pem
 ```
 
-If you want to redirect all traffic to HTTPS, switch the `force_ssl` boolean to true inside the superwhale configuration file.
+If you want to redirect all traffic to HTTPS, switch the `force_ssl` boolean to true inside the superwhale configuration file. You can exclude some domains of the SSL forcing using the superwhale configuration file (read comments in configuration file). You can exclude all direct ip traffic (when Host header isn't set) by adding `none` to the domain exclusion list.
 
 ##### Launching the container
 
