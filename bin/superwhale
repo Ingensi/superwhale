@@ -7,10 +7,7 @@ require 'logger'
 
 # Folders constants
 PATHS = {
-    superwhale: {
-        custom: '/etc/superwhale.d',
-        defaults: '/usr/lib/superwhale',
-    },
+    superwhale: '/etc/superwhale.d',
     haproxy: '/etc/haproxy',
     hosts: '/etc/hosts'
 }
@@ -18,16 +15,9 @@ PATHS = {
 # SuperWhale constants
 SUPERWHALE = {
     version: '1.0.0',
-    debug: ARGV.include?('--debug'),
-    info: ARGV.include?('--info'),
-    services: "#{PATHS[:superwhale][:custom]}/*.yml",
-    defaults: {
-        header: "#{PATHS[:superwhale][:defaults]}/header.cfg"
-    },
-    custom: {
-        header: "#{PATHS[:superwhale][:custom]}/header.cfg",
-        https_cert: "#{PATHS[:superwhale][:custom]}/https.pem"
-    },
+    config: YAML.load_file("#{PATHS[:superwhale]}/configs/superwhale.yml"),
+    services: "#{PATHS[:superwhale]}/services/*.yml",
+    https_cert: "#{PATHS[:superwhale]}/configs/https.pem",
     failed_services: []
 }
 
@@ -35,7 +25,9 @@ SUPERWHALE = {
 HAPROXY = {
     binary: '/usr/sbin/haproxy',
     debug_flag: '-d',
+    proxies_header: "#{PATHS[:superwhale]}/configs/header.cfg",
     dispatcher: {
+        header: "#{PATHS[:superwhale]}/configs/dispatcher_header.cfg",
         config: "#{PATHS[:haproxy]}/haproxy_dispatcher.cfg"
     },
     master: {
@@ -50,12 +42,15 @@ HAPROXY = {
 
 # Logging helper
 LOGGER = Logger.new(STDOUT)
-LOGGER.level = if SUPERWHALE[:debug]
-                 Logger::DEBUG
-               elsif SUPERWHALE[:info]
-                 Logger::INFO
-               else
-                 Logger::WARN
+LOGGER.level = case SUPERWHALE[:config]['log_level']
+                 when 'debug'
+                   Logger::DEBUG
+                 when 'info'
+                   Logger::INFO
+                 when 'warning'
+                   Logger::WARN
+                 else
+                   Logger::WARN
                end
 
 # Checks if a host exists in /etc/hosts file
@@ -66,13 +61,7 @@ end
 
 def compile_haproxy_config(frontend_directives, backend_blocks, instance_port)
   # Loading header of haproxy configuration file
-  haproxy_cfg = if File.exist? SUPERWHALE[:custom][:header]
-                  LOGGER.info 'Loaded custom haproxy config header'
-                  File.read SUPERWHALE[:custom][:header]
-                else
-                  LOGGER.info 'Loaded default haproxy config header'
-                  File.read SUPERWHALE[:defaults][:header]
-                end
+  haproxy_cfg = File.read HAPROXY[:proxies_header]
 
   # Compiling frontend block
   haproxy_cfg << "\n\nfrontend public\n"
@@ -91,47 +80,53 @@ def compile_haproxy_config(frontend_directives, backend_blocks, instance_port)
   haproxy_cfg
 end
 
-# Create HAProxies configuration from superwhale services
-def create_haproxy_config(generate_dispatcher)
+def create_dispatcher_config
+  # Dispatcher defaults
+  dispatcher_config = File.read HAPROXY[:dispatcher][:header]
 
-  # Generating dispatcher configuration
-  if generate_dispatcher
-    # Dispatcher defaults
-    dispatcher_config = "defaults\n"
-    dispatcher_config << "  maxconn 4096\n"
-    dispatcher_config << "  log global\n"
-    dispatcher_config << "  mode http\n"
-    dispatcher_config << "  retries 3\n"
-    dispatcher_config << "  timeout connect 5s\n"
-    dispatcher_config << "  timeout client 15m\n"
-    dispatcher_config << "  timeout server 15m\n\n"
+  # Dispatcher frontend
+  dispatcher_config << "frontend public\n"
+  dispatcher_config << "  bind *:80\n"
 
-    # Dispatcher frontend
-    dispatcher_config << "frontend public\n"
-    dispatcher_config << "  bind *:80\n"
+  # Frontend HTTPS management
+  if File.exist? SUPERWHALE[:https_cert]
+    LOGGER.info 'Certificate found, activating SSL'
+    dispatcher_config << "  bind *:443 ssl crt #{SUPERWHALE[:https_cert]}\n"
 
-    # Frontend HTTPS management
-    if File.exist? SUPERWHALE[:custom][:https_cert]
-      LOGGER.info 'Certificate found, activating SSL'
-      dispatcher_config << "  bind *:443 ssl crt #{SUPERWHALE[:custom][:https_cert]}\n"
-      if ARGV.include? '--force-ssl'
-        dispatcher_config << "  redirect scheme https if !{ ssl_fc }\n"
-      end
-    else
-      LOGGER.warn 'No certificate found, disabling SSL capabilities'
+    if SUPERWHALE[:config]['force_ssl']
+
+      LOGGER.info 'Forcing HTTPS over HTTP'
+
+      https_domain_exclusion = ''
+      SUPERWHALE[:config]['ssl_noforce_domain'].each do |domain|
+        https_domain_exclusion << "!{ hdr(host) -i #{domain} } "
+        LOGGER.info "Excluding #{domain} from HTTPS forcing"
+      end if SUPERWHALE[:config].has_key? 'ssl_noforce_domain'
+
+      dispatcher_config << "  redirect scheme https if !{ ssl_fc } #{https_domain_exclusion}\n"
     end
-    dispatcher_config << "  default_backend dispatched\n\n"
 
-    # Dispatcher backend
-    dispatcher_config << "backend dispatched\n"
-    dispatcher_config << "  server master 127.0.0.1:#{HAPROXY[:master][:port]} check\n"
-    dispatcher_config << "  server slave 127.0.0.1:#{HAPROXY[:slave][:port]} check backup\n"
 
-    LOGGER.debug "Dispatcher configuration:\n\n#{dispatcher_config}"
-
-    File.write HAPROXY[:dispatcher][:config], dispatcher_config
+    SUPERWHALE[:config]['dispatcher_frontend'].each do |directive|
+      dispatcher_config << "  #{directive}\n"
+    end if SUPERWHALE[:config].has_key? 'dispatcher_frontend'
+  else
+    LOGGER.warn 'No certificate found, disabling SSL capabilities'
   end
+  dispatcher_config << "  default_backend dispatched\n\n"
 
+  # Dispatcher backend
+  dispatcher_config << "backend dispatched\n"
+  dispatcher_config << "  server master 127.0.0.1:#{HAPROXY[:master][:port]} check\n"
+  dispatcher_config << "  server slave 127.0.0.1:#{HAPROXY[:slave][:port]} check backup\n"
+
+  LOGGER.debug "Dispatcher configuration:\n\n#{dispatcher_config}"
+
+  File.write HAPROXY[:dispatcher][:config], dispatcher_config
+end
+
+# Create HAProxies configuration from superwhale services
+def create_haproxies_config
 
   LOGGER.info 'Parsing configurations'
 
@@ -242,26 +237,28 @@ end
 
 # Entry point
 def main
-  LOGGER.warn "Starting up SuperWhale, version #{PATHS[:superwhale][:version]} !"
+  LOGGER.warn "Starting up SuperWhale, version #{SUPERWHALE[:version]} !"
 
   # Creating haproxy configuration file including dispatcher config
-  create_haproxy_config true
+  create_dispatcher_config
+  create_haproxies_config
 
   # Starting master HAProxy process...
   haproxy_master_pid = start_haproxy HAPROXY[:master][:config]
   haproxy_slave_pid = start_haproxy HAPROXY[:slave][:config]
 
+  # Wait 2 second for haproxies to start up
   sleep 2
 
   # Starting dispatcher HAProxy process...
   start_haproxy HAPROXY[:dispatcher][:config]
 
   # Watching for file changes, (blocking)
-  FileWatcher.new([PATHS[:hosts], "#{PATHS[:superwhale][:custom]}/*"]).watch do
+  FileWatcher.new([PATHS[:hosts], SUPERWHALE[:services]]).watch do
     LOGGER.warn 'File modification detected !'
 
     # Recreating haproxy configuration file without dispatcher config
-    create_haproxy_config false
+    create_haproxies_config
 
     # Killing slave
     LOGGER.info 'Killing slave'

@@ -1,0 +1,15 @@
+# Redirect all HTTP traffic to its HTTPS counterpart
+force_ssl: false
+
+# If you want some domains/sub-domains to not be ssl forced, uncomment this
+#ssl_noforce_domain:
+# - my.domain.tld
+# - [...]
+
+# Change the log level : debug, info (default) and warning
+log_level: info
+
+# Uncomment this to add some directive to the dispatcher frontend declaration :
+#dispatcher_frontend:
+# - myoption true
+# - [...]

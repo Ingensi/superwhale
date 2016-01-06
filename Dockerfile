@@ -20,7 +20,7 @@ RUN rm -rf /var/cache/apk/*
 
 # Adding superwhale libraries files
 RUN mkdir -p /usr/lib/superwhale
-COPY ./lib/header.cfg /usr/lib/superwhale/header.cfg
+COPY ./lib/* /usr/lib/superwhale/
 
 # Adding superwhale binary
 COPY ./bin/superwhale /bin/superwhale
