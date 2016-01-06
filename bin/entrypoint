@@ -1,5 +1,15 @@
 #!/bin/sh
 
+# Creating folders and copying default files
+if [ ! -d '/etc/superwhale.d/services' ]; then
+    mkdir -p /etc/superwhale.d/services
+fi
+if [ ! -d '/etc/superwhale.d/configs' ]; then
+    mkdir -p /etc/superwhale.d/configs
+    cp /usr/lib/superwhale/* /etc/superwhale.d/configs
+fi
+
+# Starting SuperWhale
 if [ -z "$1" ]; then
     exec /bin/superwhale
 elif [ "${1:0:1}" = '-' ]; then
