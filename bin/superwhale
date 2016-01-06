@@ -14,7 +14,7 @@ PATHS = {
 
 # SuperWhale constants
 SUPERWHALE = {
-    version: '1.0.0',
+    version: '2.0.0',
     config: YAML.load_file("#{PATHS[:superwhale]}/configs/superwhale.yml"),
     services: "#{PATHS[:superwhale]}/services/*.yml",
     https_cert: "#{PATHS[:superwhale]}/configs/https.pem",
