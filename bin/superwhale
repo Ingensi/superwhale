@@ -99,12 +99,8 @@ def create_dispatcher_config
 
       https_domain_exclusion = ''
       SUPERWHALE[:config]['ssl_noforce_domain'].each do |domain|
-        if domain == 'none'
-          https_domain_exclusion << '!{ hdr(host) -m found } '
-        else
-          https_domain_exclusion << "!{ hdr(host) -i #{domain} } "
-          LOGGER.info "Excluding #{domain} from HTTPS forcing"
-        end
+        https_domain_exclusion << "!{ hdr(host) -i #{domain} } "
+        LOGGER.info "Excluding #{domain} from HTTPS forcing"
       end if SUPERWHALE[:config].has_key? 'ssl_noforce_domain'
 
       dispatcher_config << "  redirect scheme https if !{ ssl_fc } #{https_domain_exclusion}\n"
