@@ -62,7 +62,30 @@ Here is an exhaustive list of what you can define for a service :
 | *options*     | `string[]`          | Options added to the backend block |
 | *is_default*  | `bool`              | If true, add `default_backend` with this backend. Only one service can define this option. |
 
-###### Gracefull reload
+
+##### Configuring `superwhale`
+
+You can tune `superwhale` configuration using the its configuration file : `/etc/superwhale.d/configs/superwhale.yml`. Here is the default version of this file :
+
+```
+# Redirect all HTTP traffic to its HTTPS counterpart
+force_ssl: false
+
+# If you want some domains/sub-domains to not be ssl forced, uncomment this
+#ssl_noforce_domain:
+# - my.domain.tld
+# - [...]
+
+# Change the log level : debug, info (default) and warning
+log_level: info
+
+# Uncomment this to add some directive to the dispatcher frontend declaration :
+#dispatcher_frontend:
+# - myoption true
+# - [...]
+```
+
+##### Gracefull reload
 
 When you modify services if we restart HAProxy on-the-fly it will interrupt all active connections, breaking current downloads, streamings etc... To avoid this, there is not one HAProxy, but three. There is one in the front named `dispatcher`, and 2 behinds : `master` and `slave`. When configuration is changed, slave is restarted, then master is. Using the capability of HAProxy to exit the process only when all connections are closed, there is no lost of connections.
 
@@ -81,20 +104,7 @@ is failing, while still doing the job during the time it needs to detect it.
 
 ##### Setting `haproxy.cfg` header
 
-By default, this `defaults` section will be added at the top of the HAProxies configuration files :
-
-```
-defaults
-  maxconn 4096
-  log global
-  mode http
-  retries 3
-  timeout connect 5s
-  timeout client 15min
-  timeout server 15min
-```
-
-You can override this simply by adding a `header.cfg` file in `/etc/superwhale.d`.
+You can modify `header.cfg` or `dispatcher_header.cfg` (depending with instance you want to tune) file in `/etc/superwhale.d`.
 
 ##### Using HTTPS
 
@@ -104,11 +114,7 @@ You can use HTTPS by simply adding certificate file : `/etc/superwhale.d/https.p
 $ cat server.crt server.key > /etc/superwhale.d/https.pem
 ```
 
-If you want to redirect all HTTP traffic to HTTPS, add a modifier to the container `run` command : `docker run [...] bahaika/whale-haproxy --force-ssl`.
-
-##### Debugging container
-
-If you want a verbose output for debugging purposes, add a modifier to the container `run` command : `docker run [...] bahaika/whale-haproxy --debug`. You can display less informations with a `--info` modifier.
+If you want to redirect all traffic to HTTPS, switch the `force_ssl` boolean to true inside the superwhale configuration file.
 
 ##### Launching the container
 
