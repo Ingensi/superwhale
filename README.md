@@ -126,15 +126,15 @@ While launching the container, use the `-v` argument :
 ```
 docker run -d \
 	-v /mnt/volumes/superwhale/:/etc/superwhale.d \
-	-p 80:80 -p 443:443 --net=dockernet bahaika/whale-haproxy
+	-p 80:80 -p 443:443 --net=dockernet ingensi/superwhale
 ```
 
 ###### With inheritance
 
-Create a `Dockerfile` and inherits from `bahaika/whale-haproxy` :
+Create a `Dockerfile` and inherits from `ingensi/superwhale` :
 
 ```
-FROM bahaika/whale-haproxy:latest
+FROM ingensi/superwhale:latest
 
 COPY ./service1.yml /etc/superwhale.d/service1.yml
 ```
