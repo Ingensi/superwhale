@@ -14,30 +14,19 @@ PATHS = {
 
 # SuperWhale constants
 SUPERWHALE = {
-    version: '2.0.0',
+    version: '2.1.0',
     config: YAML.load_file("#{PATHS[:superwhale]}/configs/superwhale.yml"),
     services: "#{PATHS[:superwhale]}/services/*.yml",
     https_cert: "#{PATHS[:superwhale]}/configs/https.pem",
     failed_services: []
 }
 
-# HAProxies constants
+# HAProxy constants
 HAPROXY = {
     binary: '/usr/sbin/haproxy',
     debug_flag: '-d',
-    proxies_header: "#{PATHS[:superwhale]}/configs/header.cfg",
-    dispatcher: {
-        header: "#{PATHS[:superwhale]}/configs/dispatcher_header.cfg",
-        config: "#{PATHS[:haproxy]}/haproxy_dispatcher.cfg"
-    },
-    master: {
-        config: "#{PATHS[:haproxy]}/haproxy_master.cfg",
-        port: 10080
-    },
-    slave: {
-        config: "#{PATHS[:haproxy]}/haproxy_slave.cfg",
-        port: 11080
-    }
+    header: "#{PATHS[:superwhale]}/configs/header.cfg",
+    config: "#{PATHS[:haproxy]}/haproxy.cfg"
 }
 
 # Logging helper
@@ -59,14 +48,14 @@ def hosts_exists?(hostname)
   hosts.include? "\t#{hostname}\n"
 end
 
-def compile_haproxy_config(frontend_directives, backend_blocks, instance_port)
+def compile_haproxy_config(frontend_directives, backend_blocks)
   # Loading header of haproxy configuration file
-  haproxy_cfg = File.read HAPROXY[:proxies_header]
+  haproxy_cfg = File.read HAPROXY[:header]
 
   # Compiling frontend block
   haproxy_cfg << "\n\nfrontend public\n"
   frontend_directives.each do |directive|
-    haproxy_cfg << "  #{directive}\n".gsub('%INSTANCE_PORT%', instance_port.to_s)
+    haproxy_cfg << "  #{directive}\n"
   end
 
   # Compiling backend blocks
@@ -80,18 +69,19 @@ def compile_haproxy_config(frontend_directives, backend_blocks, instance_port)
   haproxy_cfg
 end
 
-def create_dispatcher_config
-  # Dispatcher defaults
-  dispatcher_config = File.read HAPROXY[:dispatcher][:header]
 
-  # Dispatcher frontend
-  dispatcher_config << "frontend public\n"
-  dispatcher_config << "  bind *:80\n"
+# Create HAProxy configuration from superwhale services
+def create_haproxy_config
 
+  LOGGER.info 'Parsing configurations'
+
+  # Frontend block
+  frontend_directives = []
+  frontend_directives << 'bind *:80'
   # Frontend HTTPS management
   if File.exist? SUPERWHALE[:https_cert]
     LOGGER.info 'Certificate found, activating SSL'
-    dispatcher_config << "  bind *:443 ssl crt #{SUPERWHALE[:https_cert]}\n"
+    frontend_directives << "bind *:443 ssl crt #{SUPERWHALE[:https_cert]}"
 
     if SUPERWHALE[:config]['force_ssl']
 
@@ -107,36 +97,9 @@ def create_dispatcher_config
         end
       end if SUPERWHALE[:config].has_key? 'ssl_noforce_domain'
 
-      dispatcher_config << "  redirect scheme https if !{ ssl_fc } #{https_domain_exclusion}\n"
+      frontend_directives << "redirect scheme https if !{ ssl_fc } #{https_domain_exclusion}"
     end
-
-
-    SUPERWHALE[:config]['dispatcher_frontend'].each do |directive|
-      dispatcher_config << "  #{directive}\n"
-    end if SUPERWHALE[:config].has_key? 'dispatcher_frontend'
-  else
-    LOGGER.warn 'No certificate found, disabling SSL capabilities'
   end
-  dispatcher_config << "  default_backend dispatched\n\n"
-
-  # Dispatcher backend
-  dispatcher_config << "backend dispatched\n"
-  dispatcher_config << "  server master 127.0.0.1:#{HAPROXY[:master][:port]} check\n"
-  dispatcher_config << "  server slave 127.0.0.1:#{HAPROXY[:slave][:port]} check backup\n"
-
-  LOGGER.debug "Dispatcher configuration:\n\n#{dispatcher_config}"
-
-  File.write HAPROXY[:dispatcher][:config], dispatcher_config
-end
-
-# Create HAProxies configuration from superwhale services
-def create_haproxies_config
-
-  LOGGER.info 'Parsing configurations'
-
-  # Frontend block
-  frontend_directives = []
-  frontend_directives << 'bind *:%INSTANCE_PORT%'
 
   # Backend blocks
   backend_blocks = {}
@@ -217,14 +180,10 @@ def create_haproxies_config
   end
 
   # Generating and writing final configuration files, for master...
-  master_config = compile_haproxy_config frontend_directives, backend_blocks, HAPROXY[:master][:port]
-  File.write HAPROXY[:master][:config], master_config
-  # ...and for slave
-  slave_config = compile_haproxy_config frontend_directives, backend_blocks, HAPROXY[:slave][:port]
-  File.write HAPROXY[:slave][:config], slave_config
+  haproxy_config = compile_haproxy_config frontend_directives, backend_blocks
+  File.write HAPROXY[:config], haproxy_config
 
-  LOGGER.debug "Master HAProxy configuration file generated :\n\n#{master_config}\n"
-  LOGGER.debug "Slave HAProxy configuration file generated :\n\n#{slave_config}\n"
+  LOGGER.debug "Master HAProxy configuration file generated :\n\n#{haproxy_config}\n"
 
   LOGGER.info 'HAProxy configuration file created'
 end
@@ -243,46 +202,31 @@ end
 def main
   LOGGER.warn "Starting up SuperWhale, version #{SUPERWHALE[:version]} !"
 
-  # Creating haproxy configuration file including dispatcher config
-  create_dispatcher_config
-  create_haproxies_config
+  # Creating haproxy configuration file
+  create_haproxy_config
 
   # Starting master HAProxy process...
-  haproxy_master_pid = start_haproxy HAPROXY[:master][:config]
-  haproxy_slave_pid = start_haproxy HAPROXY[:slave][:config]
+  haproxy_pid = start_haproxy HAPROXY[:config]
 
-  # Wait 2 second for haproxies to start up
+  # Wait 2 second for HAProxy to start up
   sleep 2
-
-  # Starting dispatcher HAProxy process...
-  start_haproxy HAPROXY[:dispatcher][:config]
 
   # Watching for file changes, (blocking)
   FileWatcher.new([PATHS[:hosts], SUPERWHALE[:services]]).watch do
     LOGGER.warn 'File modification detected !'
 
-    # Recreating haproxy configuration file without dispatcher config
-    create_haproxies_config
-
-    # Killing slave
-    LOGGER.info 'Killing slave'
-    Process.kill 'USR1', haproxy_slave_pid
-    Process.wait haproxy_slave_pid
-    LOGGER.info 'Killing slave done'
-
-    # Restarting slave with new configuration
-    LOGGER.info 'Restarting slave'
-    haproxy_slave_pid = start_haproxy HAPROXY[:slave][:config]
+    # Creating haproxy configuration file
+    create_haproxy_config
 
     # Killing master
-    LOGGER.info 'Killing master'
-    Process.kill 'USR1', haproxy_master_pid
-    Process.wait haproxy_master_pid
-    LOGGER.info 'Killing master done'
+    LOGGER.info 'Killing haproxy'
+    Process.kill 'USR1', haproxy_pid
+    Process.wait haproxy_pid
+    LOGGER.info 'Killing haproxy done'
 
     # Restarting master with new configuration
     LOGGER.info 'Restarting master'
-    haproxy_master_pid = start_haproxy HAPROXY[:master][:config]
+    haproxy_pid = start_haproxy HAPROXY[:config]
   end
 end
 
