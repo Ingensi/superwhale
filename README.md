@@ -1,8 +1,11 @@
 ![SuperWhale Logo](https://raw.githubusercontent.com/Ingensi/superwhale/develop/doc/superwhale.png)
+
 *Logo by Camille BRIZARD*
 
 ### Superwhale
 *This project is licensed under the terms of the MIT license.*
+
+**Last version : 2.1.0**
 
 #### Aim
 Docker introduced Docker Networks with version [1.9](https://github.com/docker/docker/blob/master/CHANGELOG.md#190-2015-11-03). With that update you can now have multiple web servers linked to the same network and a reverse proxy in front of them all without having to manage links manually. First, I was using HAProxy to do this role but HAProxy wasn't flexible enough : I was facing an issue, sometimes my containers weren't running while I was starting up my reverse and because HAProxy force name resolving at startup it was crashing almost every time. So I decided to create a system that add a smart layer upon HAProxy using a simple ruby script.
@@ -10,7 +13,7 @@ Docker introduced Docker Networks with version [1.9](https://github.com/docker/d
 #### How it works
 It uses alpine as a base distribution to provide a lightweight image. It includes ruby (with 1 gem : [FileWatcher](https://github.com/thomasfl/filewatcher)) and [HAProxy](http://www.haproxy.org/), that's all. At startup, SuperWhale will launch `/bin/superwhale` : the main process of the container.
 
-`superwhale` will search for services inside the `/etc/superwhale.d` folder, create HAProxies configurations and then start HAProxies. It will also watch for file modifications inside `/etc/hosts` or `/etc/superwhale.d` and will gracefully reload HAProxies if there is any.
+`superwhale` will search for services inside the `/etc/superwhale.d` folder, create HAProxy configuration and then start HAProxy. It will also watch for file modifications inside `/etc/hosts` or `/etc/superwhale.d` and will semi-gracefully reload HAProxy if there is any.
 
 #### How to use it
 
@@ -30,7 +33,7 @@ git:
    - http-request set-header Host git.mydomain.tld
 ```
 
-Will output this inside HAProxies configuration ONLY if a `git_container` is present on the relevant `docker network` :
+Will output this inside HAProxy configuration ONLY if a `git_container` is present on the relevant `docker network` :
 
 ```
 [...]
@@ -78,16 +81,11 @@ force_ssl: false
 
 # Change the log level : debug, info (default) and warning
 log_level: info
-
-# Uncomment this to add some directive to the dispatcher frontend declaration :
-#dispatcher_frontend:
-# - myoption true
-# - [...]
 ```
 
-##### Gracefull reload
+##### Semi-gracefull reload
 
-When you modify services if we restart HAProxy on-the-fly it will interrupt all active connections, breaking current downloads, streamings etc... To avoid this, there is not one HAProxy, but three. There is one in the front named `dispatcher`, and 2 behinds : `master` and `slave`. When configuration is changed, slave is restarted, then master is. Using the capability of HAProxy to exit the process only when all connections are closed, there is no lost of connections.
+When reloading, Superwhale will do a soft-stop before restarting the process. There is a little time at startup when connections will be refused. That's why I called it "Semi-gracefull" reload.
 
 Here is what HAProxy documentation says about soft-stop : 
 ```
@@ -104,7 +102,7 @@ is failing, while still doing the job during the time it needs to detect it.
 
 ##### Setting `haproxy.cfg` header
 
-You can modify `header.cfg` or `dispatcher_header.cfg` (depending with instance you want to tune) file in `/etc/superwhale.d`.
+You can modify the `header.cfg` file in `/etc/superwhale.d`.
 
 ##### Using HTTPS
 
@@ -126,15 +124,15 @@ While launching the container, use the `-v` argument :
 ```
 docker run -d \
 	-v /mnt/volumes/superwhale/:/etc/superwhale.d \
-	-p 80:80 -p 443:443 --net=dockernet bahaika/whale-haproxy
+	-p 80:80 -p 443:443 --net=dockernet ingensi/superwhale
 ```
 
 ###### With inheritance
 
-Create a `Dockerfile` and inherits from `bahaika/whale-haproxy` :
+Create a `Dockerfile` and inherits from `ingensi/superwhale` :
 
 ```
-FROM bahaika/whale-haproxy:latest
+FROM ingensi/superwhale:latest
 
 COPY ./service1.yml /etc/superwhale.d/service1.yml
 ```
