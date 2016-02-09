@@ -78,6 +78,10 @@ def create_haproxy_config
   # Frontend block
   frontend_directives = []
   frontend_directives << 'bind *:80'
+  # Add custom frontend directives
+  SUPERWHALE[:config]['frontend_options'].each do |directive|
+      frontend_directives << directive
+  end if SUPERWHALE[:config]['frontend_options']
   # Frontend HTTPS management
   if File.exist? SUPERWHALE[:https_cert]
     LOGGER.info 'Certificate found, activating SSL'
