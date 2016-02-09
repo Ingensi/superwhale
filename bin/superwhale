@@ -169,7 +169,11 @@ def create_haproxy_config
         # Iterating on backend hosts
         current_index = 0
         hosts.each do |host|
-          backend_blocks[name] << "server #{name}#{current_index+=1} #{host['host']}:#{host['port']}"
+          if host['custom_server']
+              backend_blocks[name] << "server #{host['custom_server']}"
+          else
+              backend_blocks[name] << "server #{name}#{current_index+=1} #{host['host']}:#{host['port']}"
+          end
         end
 
         # Adding custom options
