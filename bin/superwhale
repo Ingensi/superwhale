@@ -78,6 +78,10 @@ def create_haproxy_config
   # Frontend block
   frontend_directives = []
   frontend_directives << 'bind *:80'
+  # Add custom frontend directives
+  SUPERWHALE[:config]['frontend_options'].each do |directive|
+      frontend_directives << directive
+  end if SUPERWHALE[:config]['frontend_options']
   # Frontend HTTPS management
   if File.exist? SUPERWHALE[:https_cert]
     LOGGER.info 'Certificate found, activating SSL'
@@ -161,7 +165,11 @@ def create_haproxy_config
         # Iterating on backend hosts
         current_index = 0
         hosts.each do |host|
-          backend_blocks[name] << "server #{name}#{current_index+=1} #{host['host']}:#{host['port']}"
+          if host['custom_server']
+              backend_blocks[name] << "server #{host['custom_server']}"
+          else
+              backend_blocks[name] << "server #{name}#{current_index+=1} #{host['host']}:#{host['port']}"
+          end
         end
 
         # Adding custom options
